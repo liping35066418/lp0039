@@ -108,28 +108,6 @@ function MetricCard({
   )
 }
 
-function StabilityBadge({ value }: { value: number }) {
-  let color = 'text-success'
-  let bg = 'bg-success/15'
-  let label = '稳定'
-
-  if (value < 60) {
-    color = 'text-danger'
-    bg = 'bg-danger/15'
-    label = '波动大'
-  } else if (value < 80) {
-    color = 'text-warning'
-    bg = 'bg-warning/15'
-    label = '一般'
-  }
-
-  return (
-    <span className={`text-xs px-2 py-0.5 rounded-full ${bg} ${color} font-medium`}>
-      稳定性 {value.toFixed(0)}% - {label}
-    </span>
-  )
-}
-
 export default function SpeedTest() {
   const gaugeRef = useRef<HTMLCanvasElement>(null)
   const chartRef = useRef<HTMLCanvasElement>(null)
@@ -150,7 +128,6 @@ export default function SpeedTest() {
     rounds,
     currentRound,
     roundResults,
-    stability,
     testConfig,
     startTest,
     setPhase,
@@ -308,16 +285,24 @@ export default function SpeedTest() {
         setPacketLoss(pl)
 
         const state = useSpeedTestStore.getState()
-        let s = 0
-        if (state.downloadSpeed > 0) s += Math.min(30, (state.downloadSpeed / (100 * 1024 * 1024)) * 30)
-        if (state.uploadSpeed > 0) s += Math.min(25, (state.uploadSpeed / (50 * 1024 * 1024)) * 25)
-        if (state.latencyResult) {
-          const latScore = Math.max(0, 30 - state.latencyResult.avg / 5)
-          s += Math.min(30, latScore)
+        const singleRoundResult: MultiRoundResult = {
+          round: 1,
+          timestamp: Date.now(),
+          downloadSpeed: state.downloadSpeed || undefined,
+          uploadSpeed: state.uploadSpeed || undefined,
+          latency: state.latencyResult ? { ...state.latencyResult, samples: [] } : undefined,
+          packetLoss: state.packetLoss,
         }
-        s += Math.min(15, Math.max(0, 15 - state.packetLoss * 2))
-        const finalScore = Math.round(Math.min(100, Math.max(0, s)))
-        setScore(finalScore)
+        addRoundResult(singleRoundResult)
+        const aggregated = aggregateMultiRoundResults([singleRoundResult])
+        if (aggregated) {
+          setScore(aggregated.score)
+          setStability({
+            download: aggregated.downloadSpeed.stability,
+            upload: aggregated.uploadSpeed.stability,
+            latency: aggregated.latency.stability,
+          })
+        }
       }
 
       const state = useSpeedTestStore.getState()
@@ -510,39 +495,50 @@ export default function SpeedTest() {
         </div>
       </div>
 
-      <div className="grid grid-cols-2 gap-4">
-        <MetricCard
-          icon={ArrowDown}
-          value={dlFormatted.value}
-          unit={dlFormatted.unit}
-          label="下载速度"
-          stagger="stagger-1"
-          subValue={rounds > 1 && stability.download > 0 ? `稳定性 ${stability.download.toFixed(0)}%` : undefined}
-        />
-        <MetricCard
-          icon={ArrowUp}
-          value={ulFormatted.value}
-          unit={ulFormatted.unit}
-          label="上传速度"
-          stagger="stagger-2"
-          subValue={rounds > 1 && stability.upload > 0 ? `稳定性 ${stability.upload.toFixed(0)}%` : undefined}
-        />
-        <MetricCard
-          icon={Timer}
-          value={latFormatted.value}
-          unit={latFormatted.unit}
-          label="平均延迟"
-          stagger="stagger-3"
-          subValue={latencyResult ? `抖动 ${latencyResult.jitter.toFixed(1)}ms` : undefined}
-        />
-        <MetricCard
-          icon={Wifi}
-          value={packetLoss > 0 || phase === 'complete' ? packetLoss.toFixed(1) : '--'}
-          unit="%"
-          label="丢包率"
-          stagger="stagger-4"
-        />
-      </div>
+      {(() => {
+        const agg = roundResults.length > 0 ? aggregateMultiRoundResults(roundResults) : null
+        const dlStab = agg ? agg.downloadSpeed.stability : (phase === 'complete' ? 100 : 0)
+        const ulStab = agg ? agg.uploadSpeed.stability : (phase === 'complete' ? 100 : 0)
+        const latStab = agg ? agg.latency.stability : (phase === 'complete' ? 100 : 0)
+        const dlRange = agg ? (() => { const mn = formatSpeed(agg.downloadSpeed.min); const mx = formatSpeed(agg.downloadSpeed.max); return `${mn.value}~${mx.value} ${mx.unit}` })() : null
+        const ulRange = agg ? (() => { const mn = formatSpeed(agg.uploadSpeed.min); const mx = formatSpeed(agg.uploadSpeed.max); return `${mn.value}~${mx.value} ${mx.unit}` })() : null
+        const latRange = agg ? (() => { const mn = formatLatency(agg.latency.min); const mx = formatLatency(agg.latency.max); return `${mn.value}~${mx.value} ${mx.unit}` })() : null
+        return (
+          <div className="grid grid-cols-2 gap-4">
+            <MetricCard
+              icon={ArrowDown}
+              value={dlFormatted.value}
+              unit={dlFormatted.unit}
+              label="下载速度"
+              stagger="stagger-1"
+              subValue={dlStab > 0 ? `稳定性 ${dlStab.toFixed(0)}%${dlRange ? ` | ${dlRange}` : ''}` : undefined}
+            />
+            <MetricCard
+              icon={ArrowUp}
+              value={ulFormatted.value}
+              unit={ulFormatted.unit}
+              label="上传速度"
+              stagger="stagger-2"
+              subValue={ulStab > 0 ? `稳定性 ${ulStab.toFixed(0)}%${ulRange ? ` | ${ulRange}` : ''}` : undefined}
+            />
+            <MetricCard
+              icon={Timer}
+              value={latFormatted.value}
+              unit={latFormatted.unit}
+              label="平均延迟"
+              stagger="stagger-3"
+              subValue={latStab > 0 ? `稳定性 ${latStab.toFixed(0)}%${latRange ? ` | ${latRange}` : ''}` : (latencyResult ? `抖动 ${latencyResult.jitter.toFixed(1)}ms` : undefined)}
+            />
+            <MetricCard
+              icon={Wifi}
+              value={packetLoss > 0 || phase === 'complete' ? packetLoss.toFixed(1) : '--'}
+              unit="%"
+              label="丢包率"
+              stagger="stagger-4"
+            />
+          </div>
+        )
+      })()}
 
       {latencyResult && (
         <div className="card-glass rounded-xl p-5 animate-fade-in-up">
@@ -579,7 +575,7 @@ export default function SpeedTest() {
         </div>
       )}
 
-      {roundResults.length > 1 && (
+      {rounds > 1 && roundResults.length > 0 && (
         <div className="card-glass rounded-xl p-5 animate-fade-in-up">
           <div className="flex items-center gap-2 mb-4">
             <TrendingUp size={18} className="text-accent" />
@@ -598,9 +594,9 @@ export default function SpeedTest() {
               </thead>
               <tbody>
                 {roundResults.map((r) => {
-                  const dl = r.downloadSpeed ? formatSpeed(r.downloadSpeed)
-                  const ul = r.uploadSpeed ? formatSpeed(r.uploadSpeed)
-                  const lat = r.latency ? formatLatency(r.latency.avg)
+                  const dl = r.downloadSpeed ? formatSpeed(r.downloadSpeed) : null
+                  const ul = r.uploadSpeed ? formatSpeed(r.uploadSpeed) : null
+                  const lat = r.latency ? formatLatency(r.latency.avg) : null
                   return (
                     <tr key={r.round} className="border-b border-border/50">
                       <td className="py-2 px-3 font-mono">第 {r.round} 轮</td>
@@ -619,6 +615,30 @@ export default function SpeedTest() {
                     </tr>
                   )
                 })}
+                {(() => {
+                  const agg = aggregateMultiRoundResults(roundResults)
+                  if (!agg) return null
+                  const avgDl = formatSpeed(agg.downloadSpeed.avg)
+                  const avgUl = formatSpeed(agg.uploadSpeed.avg)
+                  const avgLat = formatLatency(agg.latency.avg)
+                  return (
+                    <tr className="border-t-2 border-accent/30 bg-accent/5">
+                      <td className="py-2 px-3 font-mono font-semibold text-accent">平均值</td>
+                      <td className="py-2 px-3 text-right font-mono font-semibold text-accent">
+                        {avgDl.value} {avgDl.unit}
+                      </td>
+                      <td className="py-2 px-3 text-right font-mono font-semibold text-accent">
+                        {avgUl.value} {avgUl.unit}
+                      </td>
+                      <td className="py-2 px-3 text-right font-mono font-semibold text-accent">
+                        {avgLat.value} {avgLat.unit}
+                      </td>
+                      <td className="py-2 px-3 text-right font-mono font-semibold text-accent">
+                        {agg.packetLoss.avg.toFixed(1)}%
+                      </td>
+                    </tr>
+                  )
+                })()}
               </tbody>
             </table>
           </div>
